@@ -64,7 +64,7 @@ def load_tasks():
         "Q1": [], "Q2": [], "Q3": [], "Q4": [], "done": [],
         "earnings": 0,
         "balance": 0,
-        "debts": {"pacany": 450, "shtrafy": 1000, "obshie": 2500},
+        "debts": {"pacany": 450, "shtrafy": 0, "obshie": 0},
         "owe_me": [],
         "expenses": [],
         "income_log": []
