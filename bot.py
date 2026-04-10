@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+import pytz
+
+CYPRUS_TZ = pytz.timezone("Asia/Nicosia")
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
@@ -70,10 +73,10 @@ EXPENSE_CATS = {
 }
 
 def get_day_ru():
-    return DAYS_RU.get(datetime.now().strftime("%A"), "")
+    return DAYS_RU.get(datetime.now(CYPRUS_TZ).strftime("%A"), "")
 
 def is_weekend():
-    return datetime.now().weekday() >= 5
+    return datetime.now(CYPRUS_TZ).weekday() >= 5
 
 def progress_bar(current, total, length=10):
     filled = int((current / total) * length) if total > 0 else 0
@@ -99,7 +102,7 @@ def save_tasks(tasks):
         json.dump(tasks, f, ensure_ascii=False, indent=2)
 
 def get_period_stats(tasks, days=1):
-    now = datetime.now()
+    now = datetime.now(CYPRUS_TZ)
     cutoff = now - timedelta(days=days)
     expenses = tasks.get("expenses", [])
     income_log = tasks.get("income_log", [])
@@ -116,7 +119,7 @@ def _parse_date(s):
         return datetime.min
 
 def get_today_key():
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(CYPRUS_TZ).strftime("%Y-%m-%d")
 
 def get_routine_list():
     return ROUTINE_TASKS_WEEKEND if is_weekend() else ROUTINE_TASKS_WEEKDAY
@@ -125,7 +128,7 @@ def get_pushup_streak(log):
     if not log:
         return 0
     streak = 0
-    today = datetime.now().date()
+    today = datetime.now(CYPRUS_TZ).date()
     for i in range(len(log)):
         day = today - timedelta(days=i)
         day_str = day.strftime("%Y-%m-%d")
@@ -210,7 +213,7 @@ def debt_menu():
     return InlineKeyboardMarkup(keyboard)
 
 async def ask_claude(message, tasks=None):
-    now = datetime.now()
+    now = datetime.now(CYPRUS_TZ)
     context = f"\nСейчас: {get_day_ru()}, {now.strftime('%H:%M')}"
     if tasks:
         context += f"\nБаланс: {tasks.get('balance',0)}€ · Заработано: {tasks.get('earnings',0)}€"
@@ -234,7 +237,7 @@ async def ask_claude(message, tasks=None):
 
 def welcome_text():
     tasks = load_tasks()
-    now = datetime.now()
+    now = datetime.now(CYPRUS_TZ)
     day = get_day_ru()
     earned = tasks.get("earnings", 0)
     balance = tasks.get("balance", 0)
@@ -393,7 +396,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         week_count = sum(
             e.get("count", 0) for e in pushup_log
-            if _parse_date(e.get("date","")) >= datetime.now() - timedelta(days=7)
+            if _parse_date(e.get("date","")) >= datetime.now(CYPRUS_TZ) - timedelta(days=7)
         )
         
         text = (
@@ -648,7 +651,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tasks.setdefault("income_log", []).append({
                 "amount": person.get("amount", 0),
                 "desc": f"Вернул долг: {person.get('name')}",
-                "date": datetime.now().isoformat()
+                "date": datetime.now(CYPRUS_TZ).isoformat()
             })
             save_tasks(tasks)
             await q.edit_message_text(
@@ -694,7 +697,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d == "ai_advice":
         await q.edit_message_text("🤖 Анализирую твою ситуацию...")
-        now = datetime.now()
+        now = datetime.now(CYPRUS_TZ)
         advice = await ask_claude(
             f"Сейчас {get_day_ru()}, {now.strftime('%H:%M')}. Что делать прямо сейчас чтобы максимально быстро заработать? Конкретный план по часам.",
             tasks
@@ -717,7 +720,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count = int(''.join(c for c in text if c.isdigit()))
             pushups = tasks.setdefault("pushups", {"log": [], "goal": 100})
             pushup_log = pushups.setdefault("log", [])
-            pushup_log.append({"count": count, "date": datetime.now().isoformat()})
+            pushup_log.append({"count": count, "date": datetime.now(CYPRUS_TZ).isoformat()})
             
             today_key = get_today_key()
             today_total = sum(e.get("count", 0) for e in pushup_log if e.get("date","")[:10] == today_key)
@@ -744,7 +747,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tasks["earnings"] = tasks.get("earnings", 0) + amount
             tasks["balance"] = tasks.get("balance", 0) + amount
             tasks.setdefault("income_log", []).append({
-                "amount": amount, "desc": desc, "date": datetime.now().isoformat()
+                "amount": amount, "desc": desc, "date": datetime.now(CYPRUS_TZ).isoformat()
             })
             save_tasks(tasks)
             bar, pct = progress_bar(tasks["earnings"], 4500)
@@ -764,7 +767,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc = parts[1] if len(parts) > 1 else "расход"
             tasks["balance"] = tasks.get("balance", 0) - amount
             tasks.setdefault("expenses", []).append({
-                "amount": amount, "desc": desc, "cat": cat, "date": datetime.now().isoformat()
+                "amount": amount, "desc": desc, "cat": cat, "date": datetime.now(CYPRUS_TZ).isoformat()
             })
             save_tasks(tasks)
             await update.message.reply_text(
@@ -820,8 +823,7 @@ def main():
     
     if OWNER_ID and app.job_queue:
         from datetime import time as dtime
-        import pytz
-        tz = pytz.timezone("Asia/Nicosia")
+                tz = pytz.timezone("Asia/Nicosia")
         app.job_queue.run_daily(send_morning_routine, time=dtime(9, 0, tzinfo=tz))
     
     print("Bot v6 started!")
