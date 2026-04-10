@@ -64,7 +64,7 @@ def load_tasks():
         "Q1": [], "Q2": [], "Q3": [], "Q4": [], "done": [],
         "earnings": 0,
         "balance": 0,
-        "debts": {"pacany": 450, "shtrafy": 0, "obshie": 0},
+        "debts": {"pacany": 450, "shtrafy": 1000, "obshie": 2500},
         "owe_me": [],
         "expenses": [],
         "income_log": []
@@ -115,11 +115,11 @@ def main_menu():
     keyboard = [
         [InlineKeyboardButton("➕  Добавить задачу", callback_data="add_task")],
         [
-            InlineKeyboardButton(f"🔴  Срочные ({q1})", callback_data="view_Q1"),
-            InlineKeyboardButton(f"🔵  Важные ({q2})", callback_data="view_Q2"),
+            InlineKeyboardButton(f"🔴  Прямо сейчас ({q1})", callback_data="view_Q1"),
+            InlineKeyboardButton(f"🔵  Каждый день блоком ({q2})", callback_data="view_Q2"),
         ],
         [
-            InlineKeyboardButton(f"🟡  Делегировать ({q3})", callback_data="view_Q3"),
+            InlineKeyboardButton(f"🟡  Рутина каждый день ({q3})", callback_data="view_Q3"),
             InlineKeyboardButton(f"🟢  Потом ({q4})", callback_data="view_Q4"),
         ],
         [InlineKeyboardButton("✅  Выполненные", callback_data="view_done")],
@@ -162,10 +162,10 @@ def debt_menu():
 
 def priority_menu():
     keyboard = [
-        [InlineKeyboardButton("🔴  Срочно + Важно (Q1)", callback_data="prio_Q1")],
-        [InlineKeyboardButton("🔵  Важно, не срочно (Q2)", callback_data="prio_Q2")],
-        [InlineKeyboardButton("🟡  Срочно, не важно (Q3)", callback_data="prio_Q3")],
-        [InlineKeyboardButton("🟢  Не срочно, не важно (Q4)", callback_data="prio_Q4")],
+        [InlineKeyboardButton("🔴  Прямо сейчас", callback_data="prio_Q1")],
+        [InlineKeyboardButton("🔵  Каждый день блоком", callback_data="prio_Q2")],
+        [InlineKeyboardButton("🟡  Рутина каждый день", callback_data="prio_Q3")],
+        [InlineKeyboardButton("🟢  Потом", callback_data="prio_Q4")],
         [InlineKeyboardButton("🤖  Пусть ИИ решит", callback_data="prio_AI")],
         [InlineKeyboardButton("❌  Отмена", callback_data="cancel")],
     ]
@@ -279,7 +279,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_tasks(tasks)
         context.user_data.clear()
         icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢"}
-        labels = {"Q1": "Срочно + Важно", "Q2": "Важно, не срочно", "Q3": "Делегировать", "Q4": "Потом"}
+        labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом"}
         await q.edit_message_text(
             f"✅ Добавлено!\n\n📌 {task}\n{icons[p]} {labels[p]}{note}",
             reply_markup=main_menu()
@@ -288,7 +288,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("view_"):
         qd = d.replace("view_", "")
         icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢", "done": "✅"}
-        labels = {"Q1": "Срочно + Важно", "Q2": "Важно, не срочно", "Q3": "Делегировать", "Q4": "Потом", "done": "Выполненные"}
+        labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом", "done": "Выполненные"}
         items = tasks.get(qd, [])
         if not items:
             kb = [[InlineKeyboardButton("⬅️  Назад", callback_data="back_main")]]
@@ -320,7 +320,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items = tasks.get(qd, [])
         if i < len(items):
             icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢"}
-            labels = {"Q1": "Срочно", "Q2": "Важно", "Q3": "Делегировать", "Q4": "Потом"}
+            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом"}
             kb = []
             for target in ["Q1", "Q2", "Q3", "Q4"]:
                 if target != qd:
@@ -341,7 +341,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tasks[p].append(task_name)
             save_tasks(tasks)
             icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢"}
-            labels = {"Q1": "Срочно", "Q2": "Важно", "Q3": "Делегировать", "Q4": "Потом"}
+            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом"}
             await q.edit_message_text(
                 f"🔄 Перенесено!\n\n📌 {task_name}\n{icons[p]} {labels[p]}",
                 reply_markup=main_menu()
