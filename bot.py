@@ -4,9 +4,11 @@ import httpx
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 TASKS_FILE = "tasks.json"
 
 SYSTEM_PROMPT = """Ты личный помощник, бизнес-стратег и маркетолог Саида. Думай как топовый бизнесмен — всегда фокус на том что даст деньги БЫСТРЕЕ.
@@ -15,22 +17,29 @@ SYSTEM_PROMPT = """Ты личный помощник, бизнес-страте
 - Живёт на Южном Кипре
 - Цель: заработать 4500 евро за 30 дней
 - Через 30 дней приедет девушка — семейный бюджет общий
-- Футбол: понедельник и среда вечером (не планировать)
+- Футбол: понедельник и среда вечером (не планировать дела)
 - Утро: 9:00 отжимания+душ+завтрак, 9:30-10:00 отчёты арбитраж
+- Выходные: суббота и воскресенье — облегчённый режим, рутина необязательна
 
 ФИНАНСОВЫЕ ЦЕЛИ:
-- 1000 евро — штрафы ПДД (срочно, есть дедлайн)
-- 400-500 евро — долг друзьям (отдать с первых заработков, не горит)
-- 2500 долларов — общие долги (частями, ждут)
+- 1000 евро — штрафы ПДД (срочно)
+- 400-500 евро — долг друзьям (с первых заработков)
+- 2500 долларов — общие долги (частями)
 - 2000 евро — к приезду девушки
 
 НАПРАВЛЕНИЯ БИЗНЕСА:
-1. АРБИТРАЖ — Команды 00 и 52. Отчёты каждое утро. Помощник запускает до 20 аккаунтов в день.
-2. ХИМЧИСТКА с Сашей (50/50) — уже работает, 3-4 заказа в неделю, реклама 300-500$ в месяц.
-3. ХИМЧИСТКА через девочку — нестабильно, 1-2 заказа в неделю.
+1. АРБИТРАЖ — Команды 00 и 52. Отчёты каждое утро. Помощник до 20 аккаунтов в день.
+2. ХИМЧИСТКА с Сашей (50/50) — работает, 3-4 заказа в неделю, реклама 300-500$ в месяц.
+3. ХИМЧИСТКА через девочку — 1-2 заказа в неделю.
 4. ХИМЧИСТКА НА ТРОИХ — самый быстрый старт, друзья готовы, нужен сайт и реклама.
 5. ДЕВУШКА В КИЕВЕ — сайт + реклама, к приезду должны идти заказы.
 6. САЙТ Google аккаунтов — полуготовый, продажа арбитражникам.
+
+СИСТЕМА ПРИОРИТЕТОВ:
+Q1 ПРЯМО СЕЙЧАС = задачи которые дают деньги сегодня. Делать первым делом.
+Q2 КАЖДЫЙ ДЕНЬ БЛОКОМ = 2-3 часа в день на одну задачу. Сайты, реклама, развитие.
+Q3 РУТИНА КАЖДЫЙ ДЕНЬ = отчёты, аккаунты, контроль. Быстро или делегировать.
+Q4 ПОТОМ = отложить на месяц.
 
 Отвечай на русском. Коротко и конкретно. Используй эмодзи."""
 
@@ -38,6 +47,19 @@ DAYS_RU = {
     "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда",
     "Thursday": "Четверг", "Friday": "Пятница", "Saturday": "Суббота", "Sunday": "Воскресенье"
 }
+
+ROUTINE_TASKS_WEEKDAY = [
+    "Отчёт команда 00",
+    "Отчёт команда 52",
+    "Контроль помощника 20 аккаунтов",
+    "Запросить аккаунты",
+    "Карты и ссылки под аккаунты",
+    "Отжимания 💪",
+]
+
+ROUTINE_TASKS_WEEKEND = [
+    "Отжимания 💪",
+]
 
 EXPENSE_CATS = {
     "food": "🛒 Еда",
@@ -49,6 +71,9 @@ EXPENSE_CATS = {
 
 def get_day_ru():
     return DAYS_RU.get(datetime.now().strftime("%A"), "")
+
+def is_weekend():
+    return datetime.now().weekday() >= 5
 
 def progress_bar(current, total, length=10):
     filled = int((current / total) * length) if total > 0 else 0
@@ -62,12 +87,11 @@ def load_tasks():
             return json.load(f)
     return {
         "Q1": [], "Q2": [], "Q3": [], "Q4": [], "done": [],
-        "earnings": 0,
-        "balance": 0,
-        "debts": {"pacany": 450, "shtrafy": 1000, "obshie": 2500},
-        "owe_me": [],
-        "expenses": [],
-        "income_log": []
+        "earnings": 0, "balance": 0,
+        "debts": {"pacany": 0, "shtrafy": 0, "obshie": 0},
+        "owe_me": [], "expenses": [], "income_log": [],
+        "pushups": {"today": 0, "log": [], "streak": 0, "goal": 100},
+        "routine_done": {}
     }
 
 def save_tasks(tasks):
@@ -77,33 +101,39 @@ def save_tasks(tasks):
 def get_period_stats(tasks, days=1):
     now = datetime.now()
     cutoff = now - timedelta(days=days)
-    
     expenses = tasks.get("expenses", [])
     income_log = tasks.get("income_log", [])
-    
-    period_expenses = []
-    period_income = []
-    
-    for e in expenses:
-        try:
-            dt = datetime.fromisoformat(e.get("date", ""))
-            if dt >= cutoff:
-                period_expenses.append(e)
-        except:
-            pass
-    
-    for i in income_log:
-        try:
-            dt = datetime.fromisoformat(i.get("date", ""))
-            if dt >= cutoff:
-                period_income.append(i)
-        except:
-            pass
-    
-    total_exp = sum(e.get("amount", 0) for e in period_expenses)
-    total_inc = sum(i.get("amount", 0) for i in period_income)
-    
-    return total_exp, total_inc, period_expenses, period_income
+    period_exp = [e for e in expenses if _parse_date(e.get("date","")) >= cutoff]
+    period_inc = [i for i in income_log if _parse_date(i.get("date","")) >= cutoff]
+    total_exp = sum(e.get("amount", 0) for e in period_exp)
+    total_inc = sum(i.get("amount", 0) for i in period_inc)
+    return total_exp, total_inc
+
+def _parse_date(s):
+    try:
+        return datetime.fromisoformat(s)
+    except:
+        return datetime.min
+
+def get_today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+def get_routine_list():
+    return ROUTINE_TASKS_WEEKEND if is_weekend() else ROUTINE_TASKS_WEEKDAY
+
+def get_pushup_streak(log):
+    if not log:
+        return 0
+    streak = 0
+    today = datetime.now().date()
+    for i in range(len(log)):
+        day = today - timedelta(days=i)
+        day_str = day.strftime("%Y-%m-%d")
+        if any(e.get("date", "")[:10] == day_str for e in log):
+            streak += 1
+        else:
+            break
+    return streak
 
 def main_menu():
     tasks = load_tasks()
@@ -112,16 +142,24 @@ def main_menu():
     q3 = len(tasks.get("Q3", []))
     q4 = len(tasks.get("Q4", []))
     balance = tasks.get("balance", 0)
+    
+    pushups = tasks.get("pushups", {})
+    today_key = get_today_key()
+    pushup_log = pushups.get("log", [])
+    today_pushups = sum(e.get("count", 0) for e in pushup_log if e.get("date","")[:10] == today_key)
+    
     keyboard = [
         [InlineKeyboardButton("➕  Добавить задачу", callback_data="add_task")],
         [
             InlineKeyboardButton(f"🔴  Прямо сейчас ({q1})", callback_data="view_Q1"),
-            InlineKeyboardButton(f"🔵  Каждый день блоком ({q2})", callback_data="view_Q2"),
+            InlineKeyboardButton(f"🔵  Блоком ({q2})", callback_data="view_Q2"),
         ],
         [
-            InlineKeyboardButton(f"🟡  Рутина каждый день ({q3})", callback_data="view_Q3"),
+            InlineKeyboardButton(f"🟡  Рутина ({q3})", callback_data="view_Q3"),
             InlineKeyboardButton(f"🟢  Потом ({q4})", callback_data="view_Q4"),
         ],
+        [InlineKeyboardButton("☑️  Рутина сегодня", callback_data="routine_today")],
+        [InlineKeyboardButton(f"💪  Отжимания · {today_pushups} сегодня", callback_data="pushups")],
         [InlineKeyboardButton("✅  Выполненные", callback_data="view_done")],
         [InlineKeyboardButton(f"💰  Финансы · {balance}€", callback_data="finances")],
         [InlineKeyboardButton("🤖  Что делать сейчас?", callback_data="ai_advice")],
@@ -129,11 +167,22 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def priority_menu():
+    keyboard = [
+        [InlineKeyboardButton("🔴  Прямо сейчас", callback_data="prio_Q1")],
+        [InlineKeyboardButton("🔵  Каждый день блоком", callback_data="prio_Q2")],
+        [InlineKeyboardButton("🟡  Рутина каждый день", callback_data="prio_Q3")],
+        [InlineKeyboardButton("🟢  Потом", callback_data="prio_Q4")],
+        [InlineKeyboardButton("🤖  Пусть ИИ решит", callback_data="prio_AI")],
+        [InlineKeyboardButton("❌  Отмена", callback_data="cancel")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 def finances_menu():
     keyboard = [
         [InlineKeyboardButton("➕  Доход", callback_data="income"),
          InlineKeyboardButton("➖  Расход", callback_data="expense")],
-        [InlineKeyboardButton("👥  Мне должны", callback_data="owe_me_menu")],
+        [InlineKeyboardButton("📥  Мне должны", callback_data="owe_me_menu")],
         [InlineKeyboardButton("💸  Отдал долг", callback_data="pay_debt_menu")],
         [InlineKeyboardButton("📊  Статистика", callback_data="stats")],
         [InlineKeyboardButton("⬅️  Назад", callback_data="back_main")],
@@ -160,22 +209,11 @@ def debt_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def priority_menu():
-    keyboard = [
-        [InlineKeyboardButton("🔴  Прямо сейчас", callback_data="prio_Q1")],
-        [InlineKeyboardButton("🔵  Каждый день блоком", callback_data="prio_Q2")],
-        [InlineKeyboardButton("🟡  Рутина каждый день", callback_data="prio_Q3")],
-        [InlineKeyboardButton("🟢  Потом", callback_data="prio_Q4")],
-        [InlineKeyboardButton("🤖  Пусть ИИ решит", callback_data="prio_AI")],
-        [InlineKeyboardButton("❌  Отмена", callback_data="cancel")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
 async def ask_claude(message, tasks=None):
     now = datetime.now()
     context = f"\nСейчас: {get_day_ru()}, {now.strftime('%H:%M')}"
     if tasks:
-        context += f"\nБаланс: {tasks.get('balance', 0)}€ · Заработано всего: {tasks.get('earnings', 0)}€"
+        context += f"\nБаланс: {tasks.get('balance',0)}€ · Заработано: {tasks.get('earnings',0)}€"
         context += f"\nЗадачи Q1={tasks.get('Q1',[])} Q2={tasks.get('Q2',[])}"
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
@@ -204,27 +242,74 @@ def welcome_text():
     q1 = len(tasks.get("Q1", []))
     total_active = sum(len(tasks.get(q, [])) for q in ["Q1","Q2","Q3","Q4"])
     done = len(tasks.get("done", []))
+    exp_day, inc_day = get_period_stats(tasks, 1)
     
-    exp_day, inc_day, _, _ = get_period_stats(tasks, 1)
+    pushups = tasks.get("pushups", {})
+    today_key = get_today_key()
+    pushup_log = pushups.get("log", [])
+    today_pushups = sum(e.get("count", 0) for e in pushup_log if e.get("date","")[:10] == today_key)
+    streak = get_pushup_streak(pushup_log)
+    
+    routine_done = tasks.get("routine_done", {})
+    today_routine = routine_done.get(today_key, [])
+    total_routine = len(get_routine_list())
+    done_routine = len(today_routine)
+
+    weekend_note = "\n🏖 Выходной — рутина необязательна!" if is_weekend() else ""
 
     text = (
         f"👋 Привет, Саид!\n\n"
-        f"📅 {day} · {now.strftime('%H:%M')}\n\n"
+        f"📅 {day} · {now.strftime('%H:%M')}{weekend_note}\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"💳 Баланс: {balance}€\n"
-        f"📈 Сегодня: +{inc_day}€ доход · -{exp_day}€ расход\n\n"
-        f"💰 Прогресс к цели\n"
-        f"{bar} {pct}%\n"
+        f"💳 Баланс: {balance}€  📈 Сегодня: +{inc_day}€ -{exp_day}€\n\n"
+        f"💰 К цели: {bar} {pct}%\n"
         f"{earned}€ из 4500€\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📋 Задачи\n"
-        f"🔴 Срочных: {q1}  📌 Активных: {total_active}  ✅ Готово: {done}\n"
+        f"📋 Задачи: 🔴{q1} · 📌{total_active} · ✅{done}\n"
+        f"☑️ Рутина: {done_routine}/{total_routine}\n"
+        f"💪 Отжимания: {today_pushups} сегодня · 🔥{streak} дней подряд\n"
         f"━━━━━━━━━━━━━━━"
     )
     return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text(), reply_markup=main_menu())
+
+async def send_morning_routine(context):
+    tasks = load_tasks()
+    routine = get_routine_list()
+    day = get_day_ru()
+    
+    if is_weekend():
+        text = (
+            f"🌅 Доброе утро, Саид!\n\n"
+            f"📅 {day} — выходной!\n\n"
+            f"Сегодня только одно обязательное:\n"
+            f"💪 Отжимания\n\n"
+            f"Остальное по желанию. Отдыхай!"
+        )
+    else:
+        earned = tasks.get("earnings", 0)
+        q1 = len(tasks.get("Q1", []))
+        text = (
+            f"🌅 Доброе утро, Саид!\n\n"
+            f"📅 {day}\n\n"
+            f"⏰ Рутина на сегодня:\n"
+        )
+        for t in routine:
+            text += f"▫️ {t}\n"
+        text += (
+            f"\n💰 Заработано: {earned}€ из 4500€\n"
+            f"🔴 Срочных задач: {q1}\n\n"
+            f"Открой бота и отметь рутину когда сделаешь!"
+        )
+    
+    kb = [[InlineKeyboardButton("📋 Открыть меню", callback_data="back_main")]]
+    await context.bot.send_message(
+        chat_id=OWNER_ID,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -239,21 +324,118 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await q.edit_message_text(welcome_text(), reply_markup=main_menu())
 
+    elif d == "routine_today":
+        today_key = get_today_key()
+        routine = get_routine_list()
+        routine_done = tasks.get("routine_done", {})
+        done_today = routine_done.get(today_key, [])
+        
+        kb = []
+        for i, task in enumerate(routine):
+            done = task in done_today
+            icon = "✅" if done else "▫️"
+            kb.append([InlineKeyboardButton(f"{icon}  {task}", callback_data=f"rtoggle_{i}")])
+        kb.append([InlineKeyboardButton("⬅️  Назад", callback_data="back_main")])
+        
+        done_count = len(done_today)
+        total = len(routine)
+        bar, pct = progress_bar(done_count, total)
+        
+        weekend_note = " (выходной — необязательно)" if is_weekend() else ""
+        
+        await q.edit_message_text(
+            f"☑️ РУТИНА СЕГОДНЯ{weekend_note}\n\n"
+            f"{bar} {done_count}/{total}\n\n"
+            f"Нажми чтобы отметить:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    elif d.startswith("rtoggle_"):
+        i = int(d.replace("rtoggle_", ""))
+        today_key = get_today_key()
+        routine = get_routine_list()
+        if i < len(routine):
+            task = routine[i]
+            routine_done = tasks.setdefault("routine_done", {})
+            done_today = routine_done.get(today_key, [])
+            if task in done_today:
+                done_today.remove(task)
+            else:
+                done_today.append(task)
+            routine_done[today_key] = done_today
+            save_tasks(tasks)
+            
+            kb = []
+            for j, t in enumerate(routine):
+                done = t in done_today
+                icon = "✅" if done else "▫️"
+                kb.append([InlineKeyboardButton(f"{icon}  {t}", callback_data=f"rtoggle_{j}")])
+            kb.append([InlineKeyboardButton("⬅️  Назад", callback_data="back_main")])
+            
+            bar, pct = progress_bar(len(done_today), len(routine))
+            weekend_note = " (выходной — необязательно)" if is_weekend() else ""
+            
+            await q.edit_message_text(
+                f"☑️ РУТИНА СЕГОДНЯ{weekend_note}\n\n"
+                f"{bar} {len(done_today)}/{len(routine)}\n\n"
+                f"Нажми чтобы отметить:",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+    elif d == "pushups":
+        today_key = get_today_key()
+        pushups = tasks.get("pushups", {"today": 0, "log": [], "streak": 0, "goal": 100})
+        pushup_log = pushups.get("log", [])
+        today_count = sum(e.get("count", 0) for e in pushup_log if e.get("date","")[:10] == today_key)
+        streak = get_pushup_streak(pushup_log)
+        goal = pushups.get("goal", 100)
+        bar, pct = progress_bar(today_count, 40)
+        
+        week_count = sum(
+            e.get("count", 0) for e in pushup_log
+            if _parse_date(e.get("date","")) >= datetime.now() - timedelta(days=7)
+        )
+        
+        text = (
+            f"💪 ОТЖИМАНИЯ\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"Сегодня: {today_count} отжиманий\n"
+            f"{bar} {pct}% от дневной нормы\n\n"
+            f"🔥 Серия: {streak} дней подряд!\n"
+            f"📅 За неделю: {week_count}\n"
+            f"🎯 Цель: {goal} в день\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"Сейчас: 40 · Цель через месяц: {goal}"
+        )
+        kb = [
+            [InlineKeyboardButton("➕ Добавить отжимания", callback_data="add_pushups")],
+            [InlineKeyboardButton("⬅️  Назад", callback_data="back_main")],
+        ]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == "add_pushups":
+        context.user_data["pushups"] = True
+        kb = [[InlineKeyboardButton("❌ Отмена", callback_data="pushups")]]
+        await q.edit_message_text(
+            "💪 Сколько отжиманий сделал?\n\nНапиши число:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
     elif d == "help_priority":
         text = (
             "❓ КАК РАССТАВЛЯТЬ ПРИОРИТЕТЫ\n\n"
-            "🔴 Q1 — СРОЧНО + ВАЖНО\n"
-            "Делать СЕЙЧАС. Если не сделаешь сегодня — потеряешь деньги.\n"
-            "Примеры: реклама которая должна работать, штраф с дедлайном.\n\n"
-            "🔵 Q2 — ВАЖНО, не срочно\n"
-            "Делать каждый день блоком 2-3 часа. Отсюда приходит рост.\n"
-            "Примеры: сайт химчистки, запуск рекламы, развитие бизнеса.\n\n"
-            "🟡 Q3 — СРОЧНО, не важно\n"
-            "Делегировать помощнику или делать быстро между делом.\n"
-            "Примеры: отчёты, карты и ссылки для аккаунтов.\n\n"
-            "🟢 Q4 — не срочно, не важно\n"
-            "Удалить или отложить на месяц.\n\n"
-            "💡 Правило: если не сделаю сегодня — потеряю деньги? Да = Q1. Нет = Q2."
+            "🔴 ПРЯМО СЕЙЧАС\n"
+            "Делать первым делом. Если не сделаешь сегодня — потеряешь деньги.\n"
+            "Примеры: сайт химчистки, реклама которая должна работать.\n\n"
+            "🔵 КАЖДЫЙ ДЕНЬ БЛОКОМ\n"
+            "Выделяешь 2-3 часа и работаешь только над этим без отвлечений.\n"
+            "Примеры: сайт для девушки, Google аккаунты, приложение.\n\n"
+            "🟡 РУТИНА КАЖДЫЙ ДЕНЬ\n"
+            "Быстро или делегировать помощнику. Не тратить лучшее время.\n"
+            "Примеры: отчёты, аккаунты, карты и ссылки.\n\n"
+            "🟢 ПОТОМ\n"
+            "Отложить на месяц. Сейчас не даёт денег.\n\n"
+            "💡 Правило: если не сделаю сегодня — потеряю деньги? Да = 🔴. Нет = 🔵."
         )
         kb = [[InlineKeyboardButton("⬅️  Назад", callback_data="back_main")]]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
@@ -320,16 +502,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items = tasks.get(qd, [])
         if i < len(items):
             icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢"}
-            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом"}
+            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина", "Q4": "Потом"}
             kb = []
             for target in ["Q1", "Q2", "Q3", "Q4"]:
                 if target != qd:
                     kb.append([InlineKeyboardButton(f"{icons[target]}  {labels[target]}", callback_data=f"move_to_{target}_{qd}_{i}")])
             kb.append([InlineKeyboardButton("⬅️  Назад", callback_data=f"t_{qd}_{i}")])
-            await q.edit_message_text(
-                f"🔄 Перенести:\n📌 {items[i]}\n\nВыбери новый приоритет:",
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
+            await q.edit_message_text(f"🔄 Перенести:\n📌 {items[i]}\n\nВыбери новый приоритет:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif d.startswith("move_to_"):
         rest = d.replace("move_to_", "")
@@ -341,11 +520,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tasks[p].append(task_name)
             save_tasks(tasks)
             icons = {"Q1": "🔴", "Q2": "🔵", "Q3": "🟡", "Q4": "🟢"}
-            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина каждый день", "Q4": "Потом"}
-            await q.edit_message_text(
-                f"🔄 Перенесено!\n\n📌 {task_name}\n{icons[p]} {labels[p]}",
-                reply_markup=main_menu()
-            )
+            labels = {"Q1": "Прямо сейчас", "Q2": "Каждый день блоком", "Q3": "Рутина", "Q4": "Потом"}
+            await q.edit_message_text(f"🔄 Перенесено!\n\n📌 {task_name}\n{icons[p]} {labels[p]}", reply_markup=main_menu())
 
     elif d.startswith("done_"):
         parts = d.split("_", 2)
@@ -373,29 +549,25 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         debts = tasks.get("debts", {})
         owe_me = tasks.get("owe_me", [])
         bar, pct = progress_bar(earned, 4500)
-        
-        exp_day, inc_day, _, _ = get_period_stats(tasks, 1)
-        exp_week, inc_week, _, _ = get_period_stats(tasks, 7)
-        exp_month, inc_month, _, _ = get_period_stats(tasks, 30)
-        
+        exp_day, inc_day = get_period_stats(tasks, 1)
+        exp_week, inc_week = get_period_stats(tasks, 7)
+        exp_month, inc_month = get_period_stats(tasks, 30)
         owe_total = sum(o.get("amount", 0) for o in owe_me)
-        
         msg = (
             f"💰 ФИНАНСЫ\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"💳 Текущий баланс: {balance}€\n"
+            f"💳 Баланс: {balance}€\n"
             f"📈 К цели: {bar} {pct}%\n"
             f"{earned}€ из 4500€\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📊 Статистика расходов:\n"
-            f"Сегодня: -{exp_day}€ · +{inc_day}€\n"
-            f"Неделя: -{exp_week}€ · +{inc_week}€\n"
-            f"Месяц: -{exp_month}€ · +{inc_month}€\n\n"
+            f"📊 Статистика:\n"
+            f"Сегодня: +{inc_day}€ / -{exp_day}€\n"
+            f"Неделя: +{inc_week}€ / -{exp_week}€\n"
+            f"Месяц: +{inc_month}€ / -{exp_month}€\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"💸 Мои долги:\n"
-            f"🔴 Штрафы ПДД: {debts.get('shtrafy', 1000)}€\n"
-            f"🔵 Друзьям: {debts.get('pacany', 450)}€\n"
-            f"🟡 Общие: {debts.get('obshie', 2500)}$\n\n"
+            f"🔴 Штрафы ПДД: {debts.get('shtrafy', 0)}€\n"
+            f"🔵 Друзьям: {debts.get('pacany', 0)}€\n"
+            f"🟡 Общие: {debts.get('obshie', 0)}$\n\n"
             f"📥 Мне должны: {owe_total}€ ({len(owe_me)} чел.)"
         )
         await q.edit_message_text(msg, reply_markup=finances_menu())
@@ -404,24 +576,21 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["income"] = True
         kb = [[InlineKeyboardButton("❌ Отмена", callback_data="finances")]]
         await q.edit_message_text(
-            "💰 Добавить доход\n\nНапиши: сумма описание\n\nПримеры:\n130 химчистка авто\n200 клининг с Сашей\n50 левак арбитраж",
+            "💰 Добавить доход\n\nНапиши: сумма описание\n\nПримеры:\n130 химчистка авто\n200 клининг с Сашей",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
     elif d == "expense":
         context.user_data["expense_wait"] = True
-        await q.edit_message_text(
-            "➖ Добавить расход\n\nВыбери категорию:",
-            reply_markup=expense_cat_menu()
-        )
+        await q.edit_message_text("➖ Добавить расход\n\nВыбери категорию:", reply_markup=expense_cat_menu())
 
     elif d.startswith("ecat_"):
         cat = d.replace("ecat_", "")
         context.user_data["expense_cat"] = cat
-        context.user_data["expense_wait"] = False
+        context.user_data.pop("expense_wait", None)
         kb = [[InlineKeyboardButton("❌ Отмена", callback_data="finances")]]
         await q.edit_message_text(
-            f"➖ Расход · {EXPENSE_CATS[cat]}\n\nНапиши: сумма описание\n\nПримеры:\n15 обед\n50 бензин\n30 химия для химчистки",
+            f"➖ Расход · {EXPENSE_CATS[cat]}\n\nНапиши: сумма описание\n\nПримеры:\n15 обед\n50 бензин",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
@@ -437,9 +606,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📥 МНЕ ДОЛЖНЫ:\n\n"
         total = 0
         for o in owe_me:
-            text += f"👤 {o.get('name')} — {o.get('amount')}€\n"
+            text += f"👤 {o.get('name')} — {o.get('amount')}€"
             if o.get('desc'):
-                text += f"   за: {o.get('desc')}\n"
+                text += f" · {o.get('desc')}"
+            text += "\n"
             total += o.get('amount', 0)
         text += f"\n💰 Итого: {total}€"
         kb = [
@@ -453,7 +623,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["add_owe"] = True
         kb = [[InlineKeyboardButton("❌ Отмена", callback_data="owe_me_menu")]]
         await q.edit_message_text(
-            "📥 Кто тебе должен?\n\nНапиши: имя сумма описание\n\nПримеры:\nСаша 200 за химчистку\nАндрей 150 за работу",
+            "📥 Кто тебе должен?\n\nНапиши: имя сумма описание\n\nПример: Саша 200 за химчистку",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
@@ -475,8 +645,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             person = owe_me.pop(i)
             tasks["balance"] = tasks.get("balance", 0) + person.get("amount", 0)
             tasks["earnings"] = tasks.get("earnings", 0) + person.get("amount", 0)
-            tasks["income_log"] = tasks.get("income_log", [])
-            tasks["income_log"].append({
+            tasks.setdefault("income_log", []).append({
                 "amount": person.get("amount", 0),
                 "desc": f"Вернул долг: {person.get('name')}",
                 "date": datetime.now().isoformat()
@@ -503,10 +672,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif d == "stats":
-        exp_day, inc_day, exp_list, _ = get_period_stats(tasks, 1)
-        exp_week, inc_week, _, _ = get_period_stats(tasks, 7)
-        exp_month, inc_month, _, _ = get_period_stats(tasks, 30)
-        
+        exp_day, inc_day = get_period_stats(tasks, 1)
+        exp_week, inc_week = get_period_stats(tasks, 7)
+        exp_month, inc_month = get_period_stats(tasks, 30)
         text = (
             f"📊 СТАТИСТИКА\n\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -519,7 +687,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 Месяц\n"
             f"Доход: +{inc_month}€ · Расход: -{exp_month}€\n"
             f"Итог: {inc_month - exp_month}€\n\n"
-            f"━━━━━━━━━━━━━━━\n"
             f"💳 Баланс: {tasks.get('balance', 0)}€"
         )
         kb = [[InlineKeyboardButton("⬅️  Назад", callback_data="finances")]]
@@ -544,6 +711,30 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["add"] = False
         await update.message.reply_text(f"📌 {text}\n\nКакой приоритет?", reply_markup=priority_menu())
 
+    elif context.user_data.get("pushups"):
+        context.user_data.clear()
+        try:
+            count = int(''.join(c for c in text if c.isdigit()))
+            pushups = tasks.setdefault("pushups", {"log": [], "goal": 100})
+            pushup_log = pushups.setdefault("log", [])
+            pushup_log.append({"count": count, "date": datetime.now().isoformat()})
+            
+            today_key = get_today_key()
+            today_total = sum(e.get("count", 0) for e in pushup_log if e.get("date","")[:10] == today_key)
+            streak = get_pushup_streak(pushup_log)
+            bar, pct = progress_bar(today_total, 40)
+            save_tasks(tasks)
+            
+            await update.message.reply_text(
+                f"💪 Записал {count} отжиманий!\n\n"
+                f"Сегодня итого: {today_total}\n"
+                f"{bar} {pct}% от нормы\n"
+                f"🔥 Серия: {streak} дней подряд!",
+                reply_markup=main_menu()
+            )
+        except:
+            await update.message.reply_text("Напиши просто число, например: 40", reply_markup=main_menu())
+
     elif context.user_data.get("income"):
         context.user_data.clear()
         try:
@@ -553,13 +744,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tasks["earnings"] = tasks.get("earnings", 0) + amount
             tasks["balance"] = tasks.get("balance", 0) + amount
             tasks.setdefault("income_log", []).append({
-                "amount": amount, "desc": desc,
-                "date": datetime.now().isoformat()
+                "amount": amount, "desc": desc, "date": datetime.now().isoformat()
             })
             save_tasks(tasks)
             bar, pct = progress_bar(tasks["earnings"], 4500)
             await update.message.reply_text(
-                f"✅ Доход записан!\n\n+{amount}€ · {desc}\n\n{bar} {pct}%\nБаланс: {tasks['balance']}€\nК цели: {tasks['earnings']}€ из 4500€",
+                f"✅ Доход записан!\n\n+{amount}€ · {desc}\n\n{bar} {pct}%\nБаланс: {tasks['balance']}€",
                 reply_markup=main_menu()
             )
         except:
@@ -574,12 +764,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc = parts[1] if len(parts) > 1 else "расход"
             tasks["balance"] = tasks.get("balance", 0) - amount
             tasks.setdefault("expenses", []).append({
-                "amount": amount, "desc": desc, "cat": cat,
-                "date": datetime.now().isoformat()
+                "amount": amount, "desc": desc, "cat": cat, "date": datetime.now().isoformat()
             })
             save_tasks(tasks)
             await update.message.reply_text(
-                f"➖ Расход записан!\n\n-{amount}€ · {desc}\n{EXPENSE_CATS[cat]}\n\nБаланс: {tasks['balance']}€",
+                f"➖ -{amount}€ · {desc}\n{EXPENSE_CATS[cat]}\n\nБаланс: {tasks['balance']}€",
                 reply_markup=main_menu()
             )
         except:
@@ -594,10 +783,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc = parts[2] if len(parts) > 2 else ""
             tasks.setdefault("owe_me", []).append({"name": name, "amount": amount, "desc": desc})
             save_tasks(tasks)
-            await update.message.reply_text(
-                f"📥 Записал!\n\n👤 {name} должен {amount}€\n{desc}",
-                reply_markup=main_menu()
-            )
+            await update.message.reply_text(f"📥 {name} должен {amount}€\n{desc}", reply_markup=main_menu())
         except:
             await update.message.reply_text("Напиши: имя сумма описание\nНапример: Саша 200 за химчистку", reply_markup=main_menu())
 
@@ -614,7 +800,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             names = {"pacany": "Друзьям", "shtrafy": "Штрафы ПДД", "obshie": "Общие долги"}
             currency = "$" if debt_key == "obshie" else "€"
             await update.message.reply_text(
-                f"✅ Отдал долг!\n\n💸 {names[debt_key]}\nОтдал: {amount}{currency}\nОсталось: {new_amount}{currency}\n\nБаланс: {tasks['balance']}€",
+                f"✅ Отдал долг!\n💸 {names[debt_key]}: -{amount}{currency}\nОсталось: {new_amount}{currency}\nБаланс: {tasks['balance']}€",
                 reply_markup=main_menu()
             )
         except:
@@ -626,11 +812,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response, reply_markup=InlineKeyboardMarkup(kb))
 
 def main():
+    from telegram.ext import JobQueue
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    print("Bot v5 started!")
+    
+    if OWNER_ID and app.job_queue:
+        from datetime import time as dtime
+        import pytz
+        tz = pytz.timezone("Asia/Nicosia")
+        app.job_queue.run_daily(send_morning_routine, time=dtime(9, 0, tzinfo=tz))
+    
+    print("Bot v6 started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
