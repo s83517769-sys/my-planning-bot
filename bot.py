@@ -823,7 +823,7 @@ def main():
     
     if OWNER_ID and app.job_queue:
         from datetime import time as dtime
-                tz = pytz.timezone("Asia/Nicosia")
+        tz = pytz.timezone("Asia/Nicosia")
         app.job_queue.run_daily(send_morning_routine, time=dtime(9, 0, tzinfo=tz))
     
     print("Bot v6 started!")
