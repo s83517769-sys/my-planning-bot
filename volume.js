@@ -1,48 +1,37 @@
-(function() {
-    'use strict';
-
-    function addVolumeButtons() {
+(function () {
+    function show() {
         if (document.getElementById('vol-panel')) return;
+        var wrap = document.createElement('div');
+        wrap.id = 'vol-panel';
+        wrap.style.cssText = 'position:fixed;right:20px;bottom:120px;z-index:2147483647;display:flex;flex-direction:column;gap:8px;';
 
-        var panel = document.createElement('div');
-        panel.id = 'vol-panel';
-        panel.style.cssText = 'position:fixed;bottom:40px;right:40px;z-index:2147483647;display:flex;flex-direction:column;gap:12px';
-
-        function btn(label, action) {
-            var b = document.createElement('button');
-            b.innerText = label;
-            b.style.cssText = 'font-size:36px;width:80px;height:80px;border:none;border-radius:50%;background:rgba(255,255,255,0.9);cursor:pointer';
-            b.addEventListener('click', function(e) {
-                e.stopPropagation();
-                action();
-            });
+        function mk(t, fn) {
+            var b = document.createElement('div');
+            b.textContent = t;
+            b.style.cssText = 'width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;user-select:none;-webkit-user-select:none;';
+            b.addEventListener('touchstart', function(e){ e.stopPropagation(); fn(); }, {passive:true});
+            b.addEventListener('mousedown', function(e){ e.stopPropagation(); fn(); });
             return b;
         }
 
-        panel.appendChild(btn('🔊', function() {
-            if (window.Lampa && Lampa.Volume) {
-                Lampa.Volume.up();
-            } else if (window.Android && Android.volumeUp) {
-                Android.volumeUp();
-            } else {
-                var v = document.querySelector('video');
-                if (v) v.volume = Math.min(1, v.volume + 0.1);
-            }
-        }));
+        function vol(d) {
+            var v = document.querySelector('video');
+            if (v) { v.volume = Math.min(1, Math.max(0, v.volume + d)); }
+        }
 
-        panel.appendChild(btn('🔉', function() {
-            if (window.Lampa && Lampa.Volume) {
-                Lampa.Volume.down();
-            } else if (window.Android && Android.volumeDown) {
-                Android.volumeDown();
-            } else {
-                var v = document.querySelector('video');
-                if (v) v.volume = Math.max(0, v.volume - 0.1);
-            }
-        }));
+        wrap.appendChild(mk('🔊', function(){ vol(+0.1); }));
+        wrap.appendChild(mk('🔉', function(){ vol(-0.1); }));
 
-        document.body.appendChild(panel);
+        document.body.appendChild(wrap);
     }
 
-    setTimeout(addVolumeButtons, 2000);
+    var timer = setInterval(function(){
+        if (document.body) { show(); clearInterval(timer); }
+    }, 500);
+
+    if (window.Lampa) {
+        Lampa.Listener.follow('player', function(e){
+            if (e.type === 'start' || e.type === 'ready') setTimeout(show, 500);
+        });
+    }
 })();
